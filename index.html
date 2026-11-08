@@ -79,5 +79,42 @@ window.addEventListener('online',()=>{if(cloudDirty)flushCloud();else cloudRefre
 setInterval(()=>{if(!document.hidden)cloudRefresh()},30000);
 cloudInit();
 
+async function hentShellyMaling() {
+  const felt = document.getElementById('shelly-status');
+  if (!felt) return;
+
+  if (!cloud || !cloudUser) {
+    felt.textContent = 'Logg inn for å se målingene';
+    return;
+  }
+
+  const { data, error } = await cloud
+    .from('shelly_measurements')
+    .select('temperature,humidity,measured_at')
+    .order('measured_at', { ascending: false })
+    .limit(1);
+
+  if (error || !data?.length) {
+    felt.textContent = 'Ingen målinger tilgjengelig';
+    return;
+  }
+
+  const m = data[0];
+  felt.textContent =
+    `Temperatur: ${m.temperature.toFixed(1)} °C | ` +
+    `Luftfuktighet: ${m.humidity.toFixed(1)} %`;
+}
+
+const shellyFelt = document.createElement('div');
+shellyFelt.id = 'shelly-status';
+shellyFelt.style.cssText =
+  'padding:14px;margin:12px 0;border:1px solid #555;border-radius:10px;text-align:center;';
+shellyFelt.textContent = 'Henter temperatur og luftfuktighet...';
+
+document.body.prepend(shellyFelt);
+hentShellyMaling();
+
+setInterval(() => { if (cloudUser) hentShellyMaling(); }, 60000);
+
 render();
 </script></body></html>
