@@ -79,42 +79,80 @@ window.addEventListener('online',()=>{if(cloudDirty)flushCloud();else cloudRefre
 setInterval(()=>{if(!document.hidden)cloudRefresh()},30000);
 cloudInit();
 
-async function hentShellyMaling() {
-  const felt = document.getElementById('shelly-status');
-  if (!felt) return;
+// Shelly: les fra Supabase. Selve innsamlingen må kjøres på serveren, ikke i Safari.
+const shellyRanges = {day:86400000,week:7*86400000,month:30*86400000,year:365*86400000};
+let shellyPeriod='day';
+const shellyPanel=document.createElement('section');
+shellyPanel.innerHTML='<div class="card"><h3>🌡 Temperatur og luftfuktighet</h3><p class="sub" id="shelly-status">Henter siste måling ...</p><div class="actions" id="shelly-periods"><button class="secondary" data-period="day">24 timer</button><button class="secondary" data-period="week">7 dager</button><button class="secondary" data-period="month">30 dager</button><button class="secondary" data-period="year">12 måneder</button></div><p class="sub" id="shelly-history-status">Velg periode for å vise historikk.</p><div id="shelly-chart"></div></div>';
+document.querySelector('main').insertBefore(shellyPanel,document.getElementById('home'));
+document.getElementById('shelly-periods').addEventListener('click',event=>{
+  const period=event.target.closest('button[data-period]')?.dataset.period;
+  if(period)loadShellyHistory(period);
+});
 
-  if (!cloud || !cloudUser) {
-    felt.textContent = 'Logg inn for å se målingene';
-    return;
-  }
-
-  const { data, error } = await cloud
-    .from('shelly_measurements')
-    .select('temperature,humidity,measured_at')
-    .order('measured_at', { ascending: false })
-    .limit(1);
-
-  if (error || !data?.length) {
-    felt.textContent = 'Ingen målinger tilgjengelig';
-    return;
-  }
-
-  const m = data[0];
-  felt.textContent =
-    `Temperatur: ${m.temperature.toFixed(1)} °C | ` +
-    `Luftfuktighet: ${m.humidity.toFixed(1)} %`;
+function shellyGraph(values,unit,color){
+  const valid=values.filter(v=>Number.isFinite(v));
+  if(!valid.length)return '<p class="sub">Ingen registrerte verdier.</p>';
+  const low=Math.min(...valid),high=Math.max(...valid),span=Math.max(high-low,1);
+  const points=values.map((v,i)=>{
+    const x=8+(i/Math.max(values.length-1,1))*304;
+    const y=106-((v-low)/span)*88;
+    return Number.isFinite(v)?x.toFixed(1)+','+y.toFixed(1):'';
+  }).filter(Boolean).join(' ');
+  const minText=low.toFixed(1),maxText=high.toFixed(1);
+  return '<div class="small" style="margin:10px 0 4px">'+unit+': '+minText+'–'+maxText+'</div><svg viewBox="0 0 320 120" width="100%" role="img" aria-label="'+unit+' fra '+minText+' til '+maxText+'" style="background:#162720;border:1px solid #385044;border-radius:10px"><path d="M8 106H312" stroke="#536d59" stroke-width="1" fill="none"/><polyline points="'+points+'" stroke="'+color+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" fill="none"/></svg>';
 }
-
-const shellyFelt = document.createElement('div');
-shellyFelt.id = 'shelly-status';
-shellyFelt.style.cssText =
-  'padding:14px;margin:12px 0;border:1px solid #555;border-radius:10px;text-align:center;';
-shellyFelt.textContent = 'Henter temperatur og luftfuktighet...';
-
-document.body.prepend(shellyFelt);
+async function hentShellyMaling(){
+  const felt=document.getElementById('shelly-status');
+  if(!felt)return;
+  if(!cloud||!cloudUser){felt.textContent='Logg inn under Mer for å se Shelly-målinger';return;}
+  const {data,error}=await cloud.from('shelly_measurements')
+    .select('temperature,humidity,measured_at').order('measured_at',{ascending:false}).limit(1);
+  if(error){felt.textContent='Kunne ikke lese måling: '+error.message;return;}
+  if(!data?.length){felt.textContent='Ingen Shelly-målinger tilgjengelig';return;}
+  const m=data[0],ts=new Date(m.measured_at),age=Date.now()-ts.getTime();
+  const temp=Number(m.temperature),humid=Number(m.humidity);
+  if(!Number.isFinite(temp)||!Number.isFinite(humid)){felt.textContent='Ugyldige sensordata';return;}
+  const stale=Number.isFinite(age)&&age>2*60*60*1000?' · Obs: over 2 timer gammel':'';
+  felt.textContent='Temperatur: '+temp.toFixed(1)+' °C | Luftfuktighet: '+humid.toFixed(1)+' % · '+ts.toLocaleString('nb-NO')+stale;
+}
+async function loadShellyHistory(period){
+  if(!shellyRanges[period])return;
+  shellyPeriod=period;
+  const status=document.getElementById('shelly-history-status'),chart=document.getElementById('shelly-chart');
+  if(!cloud||!cloudUser){status.textContent='Logg inn under Mer for å se historikk.';return;}
+  status.textContent='Henter historikk ...';chart.innerHTML='';
+  document.querySelectorAll('#shelly-periods button').forEach(b=>{
+    b.style.borderColor=b.dataset.period===period?'#e5be78':'#536d59';
+  });
+  const cutoff=new Date(Date.now()-shellyRanges[period]).toISOString();
+  const rows=[];
+  // Supabase returnerer ofte høyst 1000 rader per forespørsel. Hent flere sider ved behov.
+  for(let offset=0;offset<11000;offset+=1000){
+    const {data,error}=await cloud.from('shelly_measurements')
+      .select('temperature,humidity,measured_at')
+      .gte('measured_at',cutoff)
+      .order('measured_at',{ascending:false})
+      .range(offset,offset+999);
+    if(error){status.textContent='Kunne ikke hente historikk: '+error.message;return;}
+    if(!data?.length)break;
+    rows.push(...data);
+    if(data.length<1000)break;
+  }
+  const valid=rows.filter(m=>Number.isFinite(Number(m.temperature))&&Number.isFinite(Number(m.humidity))&&Number.isFinite(new Date(m.measured_at).getTime())).reverse();
+  if(!valid.length){status.textContent='Ingen lagrede målinger i denne perioden.';return;}
+  // Gjennomsnitt i tidsblokker gir lesbare kurver også over et helt år.
+  const step=Math.max(1,Math.ceil(valid.length/250)),avg=[];
+  for(let i=0;i<valid.length;i+=step){
+    const slice=valid.slice(i,i+step);
+    avg.push({temperature:slice.reduce((s,m)=>s+Number(m.temperature),0)/slice.length,
+              humidity:slice.reduce((s,m)=>s+Number(m.humidity),0)/slice.length});
+  }
+  status.textContent=valid.length+' registrerte målinger · '+new Date(valid[0].measured_at).toLocaleDateString('nb-NO')+' – '+new Date(valid[valid.length-1].measured_at).toLocaleDateString('nb-NO');
+  chart.innerHTML=shellyGraph(avg.map(m=>m.temperature),'Temperatur (°C)','#e5be78')
+    +shellyGraph(avg.map(m=>m.humidity),'Luftfuktighet (%)','#83b9d1');
+}
 hentShellyMaling();
-
-setInterval(() => { if (cloudUser) hentShellyMaling(); }, 60000);
-
+setInterval(()=>{if(cloudUser)hentShellyMaling();},60000);
 render();
 </script></body></html>
