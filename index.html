@@ -74,7 +74,7 @@ function queueCloudSave(){if(!cloudEnabled||!cloudUser)return;cloudDirty=true;cl
 async function flushCloud(){if(!cloudEnabled||!cloudUser||cloudBusy||!cloudDirty)return;cloudBusy=true;cloudDirty=false;try{await cloudPut();cloudState('Synkronisert – '+new Date().toLocaleTimeString('no-NO'))}catch(e){cloudDirty=true;cloudState('Synkronisering feilet. Data finnes lokalt: '+e.message)}finally{cloudBusy=false;if(cloudDirty)cloudTimer=setTimeout(flushCloud,5000)}}
 async function cloudRefresh(){if(!cloudEnabled||!cloudUser||cloudDirty||cloudBusy)return;try{const remote=await cloudGet();if(remote&&JSON.stringify(remote.cellar_data)!==JSON.stringify(db)){db={...structuredClone(initial),...remote.cellar_data};localStorage.setItem(KEY,JSON.stringify(db));render();cloudState('Oppdatert fra skyen')}}catch(e){cloudState('Kunne ikke hente skydata: '+e.message)}}
 async function cloudInit(){if(!cloud)return;const {data}=await cloud.auth.getUser();if(data?.user){cloudUser=data.user;cloudEnabled=localStorage.getItem('min-vinkjeller-cloud-enabled')==='yes';cloudState(cloudEnabled?'Synkronisering aktiv – '+cloudUser.email:'Innlogget: '+cloudUser.email+'. Velg overføring for å aktivere synkronisering.');if(cloudEnabled)cloudRefresh();hentShellyMaling();loadShellyHistory(shellyPeriod)}}
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloudRefresh()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){cloudRefresh();hentShellyMaling();}});
 window.addEventListener('online',()=>{if(cloudDirty)flushCloud();else cloudRefresh()});
 setInterval(()=>{if(!document.hidden)cloudRefresh()},30000);
 cloudInit();
@@ -87,7 +87,7 @@ shellyPanel.innerHTML='<div class="card"><h3>🌡 Temperatur og luftfuktighet</h
 document.querySelector('main').insertBefore(shellyPanel,document.getElementById('home'));
 document.getElementById('shelly-periods').addEventListener('click',event=>{
   const period=event.target.closest('button[data-period]')?.dataset.period;
-  if(period)loadShellyHistory(period);
+  if(period){hentShellyMaling();loadShellyHistory(period);}
 });
 
 function shellyGraph(values,unit,color){
